@@ -142,6 +142,10 @@
 
 
 
+### 4.android获取文件存储路径
+
+![1554274812164](assets/1554274812164.png)
+
 
 
 ## Service
@@ -334,3 +338,160 @@ class ViewGroup:
 
 
 
+
+
+## 热修复与插件化
+
+### 1.AndFix
+
+#### 介绍
+
+* AndFix支持2.3-7.0版本，ARM和X86架构，Dalvik和ART运行环境，32位和64位
+* AndFix提供apkpatch工具生成*.apatch的补丁包，然后分发到客户端修复bug
+* AndFix是在运行时在Native修改属性指针的方式，实现方法方法的替换，及时生效无需重启
+* AndFix在生成补丁的包的时候，会添加上@MethodReplace注解，然后在运行时通过判断是否存在该注解去hook替换
+* **核心思想：直接在native层进行方法的结构体信息对换，从而实现完美的方法新旧替换，从而实现热修复功能**
+
+#### 补丁文件
+
+![1554276393203](assets/1554276393203.png)
+
+#### 方法分析
+
+> 1. Initialize PatchManager,
+>
+> ```java
+> patchManager = new PatchManager(context);
+> patchManager.init(appversion);//current version
+> ```
+>
+> 2. Load patch,
+>
+> ```java
+> patchManager.loadPatch();
+> ```
+>
+> 3. Add patch,
+>
+> ```java
+> patchManager.addPatch(path)
+> ```
+
+**PatchManager.init(String appVersion)**
+
+* 对初始化传入的版本号进行判断是否一致，如果版本不一致清除之前的补丁文件
+* 如果一致则调用`addPatch()`加载本地的补丁文件
+
+
+
+**PatchManager.addPatch(File file)**
+
+* 将补丁文件封装为Patch对象，然后添加进一个排序patch集合中去
+
+
+
+**PatchManager.loadPatch()**
+
+* 对本地的patch进行遍历，获取每个patch的信息，然后调用AndFixManager的fix()方法进行逐一修复
+* fix()的入参classes为patch中配置文件Patch.MF的Patch-Classes字段对应的所有类，即为要修复的类
+
+
+
+**PatchManager.addPatch(String path)**
+
+* 将从服务器上下发的补丁文件，拷贝到/data/data/application package/files/apatch文件夹下
+* 然后封装成Patch对象，调用loadPatch(Patch patch)方法，单独对该补丁文件进行修复
+
+
+
+**AndFixManager.fix(File file, ClassLoader classLoader, List<String> classes)**
+
+* 验证补丁文件的签名、指纹信息等
+* 调用DexFile.loadDex()方法加载补丁文件中的dex文件，返回DexFile 对象
+* 创建匿名的类加载器，加载补丁文件中的类
+* 遍历DexFile中的元素，然后与classes集合中的类进行比对，在Dex文件中找到需要修改的类
+* 调用匿名的类加载器加载获得该类的Class对象
+* 最后调用fixClass(String, ClassLoader)修复这个类
+
+
+
+**AndFixManager.fixClass(Class<?> clazz, ClassLoader classLoader)**
+
+* 获取该类所有的方法
+* 遍历方法集合，找到存在@MethodReplace注解的方法，bug方法会在生成补丁类的时候打上此注解
+* 获取注解中的clazz的值，即要修改的类的全类名
+* 获取注解中的method的值，即要修改的方法名
+* 最后调用replaceMethod()方法去替换原来的方法
+
+
+
+**AndFixManager.replaceMethod(ClassLoader classLoader, String clz,String meth, Method method）**
+
+* 从mFixedClass哈希map中获取需要修复的类，若不存在，则加载，调用AndFix.initTargetClass()初始化
+* 根据反射获取原类中存在bug的方法
+* 最后调用AndFix.addReplaceMethod(src, method)，传入原方法对象和修改后的方法对象
+* AndFix.addReplaceMethod()中调用了native方法replaceMethod(src, dest)进行方法替换
+
+
+
+**AndFix**
+
+AndFix是Java层进行方法替换的核心类，在该类中提供了Native层的接口，加载了andfix.cpp，主要进行了Native层的初始化，以及目标修复类的替换工作。
+
+
+
+**Native层**
+
+![1554280388234](assets/1554280388234.png)
+
+* Dalvik：调用dalvik_replaceMethod()，通过meth->nativeFunc = target->nativeFunc完成方法 的替换
+
+* art：调用art_replaceMethod()完成方法替换，但是art由于版本不同，需要根据不同的版本号进行适配处理；
+
+  通过smeth->declaring_class_ = dmeth->declaring_class_完成方法 的替换
+
+  每一个java方法在art种都对应一个ArtMethod, ArtMethod记录了这个java方法的所有信息，包括所属类，访问权限、代码执行地址
+
+  通过evn->FromReflectedMethod,可以由Method对象得到这个方法对应的ArtMethod的真正其实地址，然后就可以把它强转为ArtMethod指针，从而对其所有的成员进行修改。将指针指向替换方法的真实地址。以后调用这个方法时就会直接走到新方法的实现中了。
+
+
+
+#### AndFix总体过程
+
+1. 初始化patch管理器，加载补丁；
+2. 检查手机是否支持，判断ART、Dalvik；
+3. 进行md5，指纹的安全检查
+4. 验证补丁的配置，通过patch-classes字段得到要替换的所有类
+5. 通过注解从类中得到具体要替换的方法
+6. 得到指向新方法和被替换目标方法的指针，将新方法指向目标方法，完成方法的替换。
+
+
+
+#### AndFix优缺点
+
+优势：
+
+1. BUG修复的即时性
+2. 补丁包同样采用差量技术，生成的PATCH体积小
+
+3. 对应用无侵入，几乎无性能损耗
+
+不足：
+
+1. 不支持新增字段，以及修改方法，也不支持对资源的替换。
+
+2. 由于厂商的自定义ROM，对少数机型暂不支持。兼容性差。
+
+
+
+
+
+**【参考】**：
+
+[Andfix热修复框架原理及源码解析](<https://blog.csdn.net/u011176685/article/details/50984885>)
+
+[AndFix原理分析](<https://www.jianshu.com/p/b3aa96e449ec>)
+
+[Android中热修复框架AndFix原理解析及案例使用](<https://blog.csdn.net/u011277123/article/details/53282381>)
+
+[阿里最新热修复Sophix与QQ超级补丁和Tinker的实现与总结](<https://www.jianshu.com/p/0a31d145cad2>)
