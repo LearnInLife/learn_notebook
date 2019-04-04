@@ -495,3 +495,56 @@ AndFix是Java层进行方法替换的核心类，在该类中提供了Native层�
 [Android中热修复框架AndFix原理解析及案例使用](<https://blog.csdn.net/u011277123/article/details/53282381>)
 
 [阿里最新热修复Sophix与QQ超级补丁和Tinker的实现与总结](<https://www.jianshu.com/p/0a31d145cad2>)
+
+
+
+### 2.Tinker
+
+#### Tinker中比较关键的几个类
+
+* `PatchListener`  Patch监听者，负责执行获取到补丁包后的后续操作
+
+*  `LoadReporter`  Load记录者，负责记录加载补丁包过程的状态信息
+
+* `PatchReporter` Patch记录者，负责记录合成补丁过程的状态信息
+
+*  `AbstractPatch` Patch执行者，负责执行补丁的合成
+
+  
+
+   其中，`PatchListener`,`LoadReporter`,`PatchReporter`均为接口，`AbstractPatch`为抽象类，在Tinker中他们都有默认的实现类，对应关系如下：
+
+*  `PatchListener`  默认实现类为`DefaultPatchListener` 
+* `LoadReporter`  默认实现类为`DefaultLoadReporter` 
+*  `PatchReporter` 默认实现类为`DefaultPatchReporter` 
+* `AbstractPatch` 默认实现类为`UpgradePatch`
+
+
+
+#### 补丁的合成
+
+补丁合成调用的方法:
+
+```java
+TinkerInstaller.onReceiveUpgradePatch(getApplicationContext(), Environment.getExternalStorageDirectory().getAbsolutePath() + "/patch_signed_7zip.apk");
+```
+
+合成流程：
+
+> TinkerInstaller.onReceiveUpgradePatch()-->
+>
+> DefaultPatchListener.onPatchReceived()-->
+>
+> TinkerPatchService.runPatchService()-->
+>
+> UpgradePatch.tryPatch()
+
+* 在onPatchReceived方法中对补丁文件路径进行校验，成功后启动IntentServic进行补丁合成，失败则交给LoadReporter加载记录者进行状态记录
+* 在TinkerPatchService的onHandleIntent中会调用到increasingPriority()方法，采用Notification方式提高服务等级，进行保活
+* tryPatch方法中首先进行一些安全性的检验，例如检查tinkerId，签名，md5值等等。最后调用
+
+
+
+**【参考】**：
+
+[Tinker源码解析系列（二）—补丁合成与加载](<https://www.jianshu.com/p/04528a26de9d>)
